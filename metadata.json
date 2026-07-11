@@ -1,0 +1,6 @@
+{
+  "name": "JalVayu",
+  "description": "A hyper-local monsoon preparedness assistant that generates structured, personalized safety roadmaps based on situational context, weather metrics, and infrastructural risks.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
