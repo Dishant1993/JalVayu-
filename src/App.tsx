@@ -36,7 +36,9 @@ import {
   Play,
   Square,
   Pause,
-  Sparkles
+  Sparkles,
+  Wifi,
+  WifiOff
 } from "lucide-react";
 import { InputContext, SafetyRoadmap } from "./types";
 
@@ -153,6 +155,117 @@ export default function App() {
   const [isLiveOutput, setIsLiveOutput] = useState<boolean>(false);
   const [isConfirmed, setIsConfirmed] = useState<boolean>(false);
   const [showHelplines, setShowHelplines] = useState<boolean>(false);
+  const [isOfflineMode, setIsOfflineMode] = useState<boolean>(false);
+
+  // Local rule-based heuristic safety roadmap generator for offline mode
+  const calculateOfflineRoadmap = (context: InputContext): SafetyRoadmap => {
+    const score = context.weather_feed.waterlogging_risk_score;
+    const assets = context.vulnerable_assets;
+    const mode = context.transport_mode;
+    const budget = context.budget_buffer_inr;
+    const start = context.start_location || "starting point";
+    const dest = context.destination || "destination";
+
+    let status: "GO" | "CAUTION" | "STAY_PUT" = "GO";
+    if (score >= 8) {
+      status = "STAY_PUT";
+    } else if (score >= 5) {
+      status = "CAUTION";
+    }
+
+    let packing_directive = "";
+    if (assets.length > 0) {
+      packing_directive = `Offline Safety Check: Secure your critical assets (${assets.join(", ")}) inside double-wrapped plastic zipper bags or specialized waterproof sleeves before embarking.`;
+    } else {
+      packing_directive = `Offline Safety Check: Keep your backpack zipped and secure all electronic devices inside high-density plastic covers.`;
+    }
+
+    let commute_strategy = "";
+    if (status === "STAY_PUT") {
+      commute_strategy = `WARNING (Offline Mode): Severe monsoon hazard detected with waterlogging score of ${score}/10. High-risk zone encountered. Commuting by ${mode} from ${start} to ${dest} is highly discouraged. We strongly recommend staying put at ${start}. Keep your budget of ₹${budget} for emergency supplies.`;
+    } else if (status === "CAUTION") {
+      commute_strategy = `CAUTION (Offline Mode): Moderate monsoonal waterlogging detected on route from ${start} to ${dest}. If choosing to travel by ${mode}, avoid known low-lying streets and underpasses. Allocate part of your ₹${budget} budget for high surge fares or auto-rickshaw workarounds.`;
+    } else {
+      commute_strategy = `GO (Offline Mode): Weather and transit conditions on your route from ${start} to ${dest} appear safe. You can proceed with your commute via ${mode}. Your ₹${budget} budget buffer is fully intact.`;
+    }
+
+    let critical_alert = "";
+    if (status === "STAY_PUT") {
+      critical_alert = `CRITICAL ALERT (Offline Mode): Flooding danger on travel corridors to ${dest}. Waterlogging index is extremely high (${score}/10). Recommended to stay indoors!`;
+    } else if (status === "CAUTION") {
+      critical_alert = `MONSOON NOTICE (Offline Mode): Moderate precipitation. Transit delays or route diversions are highly likely for ${mode}.`;
+    } else {
+      critical_alert = `No active warnings for this route. Clear to travel.`;
+    }
+
+    return {
+      status,
+      packing_directive,
+      commute_strategy,
+      critical_alert
+    };
+  };
+
+  // Local voice transcript parser for offline mode
+  const localParseVoiceTranscript = (text: string) => {
+    const lower = text.toLowerCase();
+    
+    // Extract locations (from [X] to [Y])
+    let start = "";
+    let dest = "";
+    
+    const fromToMatch = lower.match(/from\s+([^,]+?)\s+to\s+([^,]+)/);
+    if (fromToMatch) {
+      start = fromToMatch[1].trim();
+      dest = fromToMatch[2].split(/\s+by\s+|\s+carrying\s+|\s+with\s+|\s+using\s+/)[0].trim();
+    } else {
+      const toMatch = lower.match(/to\s+([^,]+)/);
+      if (toMatch) {
+        dest = toMatch[1].split(/\s+by\s+|\s+carrying\s+|\s+with\s+|\s+using\s+/)[0].trim();
+      }
+    }
+    
+    // Clean up trailing spaces or punctuation from locations
+    if (start) start = start.replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "").trim();
+    if (dest) dest = dest.replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "").trim();
+
+    // Capitalize locations nicely
+    const capitalize = (s: string) => s.split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+    if (start) start = capitalize(start);
+    if (dest) dest = capitalize(dest);
+
+    // Transport modes: Metro, Cab, Auto, Two-wheeler, Walking
+    let mode = "";
+    if (lower.includes("metro") || lower.includes("train")) mode = "Metro";
+    else if (lower.includes("cab") || lower.includes("taxi") || lower.includes("uber") || lower.includes("ola")) mode = "Cab";
+    else if (lower.includes("auto") || lower.includes("rickshaw")) mode = "Auto";
+    else if (lower.includes("two-wheeler") || lower.includes("bike") || lower.includes("scooter") || lower.includes("motorcycle")) mode = "Two-wheeler";
+    else if (lower.includes("walking") || lower.includes("walk") || lower.includes("foot")) mode = "Walking";
+    
+    // Vulnerable assets
+    const assetsList = ["laptop", "textbooks", "notebooks", "passport", "medicine", "documents", "phone", "wallet", "keys", "charger", "ticket", "luggage"];
+    const detectedAssets: string[] = [];
+    assetsList.forEach(asset => {
+      if (lower.includes(asset)) {
+        detectedAssets.push(asset.charAt(0).toUpperCase() + asset.slice(1));
+      }
+    });
+    
+    // Persona
+    let personaStr = "";
+    if (lower.includes("student") || lower.includes("college") || lower.includes("school")) personaStr = "College Student";
+    else if (lower.includes("gig") || lower.includes("worker") || lower.includes("delivery")) personaStr = "Gig Worker";
+    else if (lower.includes("professional") || lower.includes("office") || lower.includes("corporate")) personaStr = "Working Professional";
+    else if (lower.includes("traveler") || lower.includes("tourist") || lower.includes("passenger")) personaStr = "Transit Traveler";
+    
+    return {
+      startLocation: start,
+      destination: dest,
+      transportMode: mode,
+      persona: personaStr,
+      vulnerableAssets: detectedAssets
+    };
+  };
 
   // AI Voice states
   const [isListening, setIsListening] = useState<boolean>(false);
@@ -251,6 +364,116 @@ export default function App() {
       if (!transcript) return;
 
       setIsListening(false);
+
+      if (isOfflineMode) {
+        setVoiceInputProgress(`Heard: "${transcript}". Parsing locally (Offline Heuristics)...`);
+        try {
+          const parsed = localParseVoiceTranscript(transcript);
+          
+          // Populate inputs
+          if (parsed.startLocation) setStartLocation(parsed.startLocation);
+          if (parsed.destination) setDestination(parsed.destination);
+          if (parsed.persona) setPersona(parsed.persona);
+          if (parsed.vulnerableAssets && parsed.vulnerableAssets.length > 0) {
+            setVulnerableAssets(parsed.vulnerableAssets);
+          }
+          if (parsed.transportMode) {
+            setTransportMode(parsed.transportMode);
+          }
+
+          setSelectedScenarioId("custom");
+          setVoiceInputProgress("Updating form and invoking local monsoon risk engine...");
+
+          // Automatically trigger local roadmap generation!
+          setIsGenerating(true);
+          setApiError(null);
+          setGenerationLogs([]);
+          setIsConfirmed(false);
+          setShowHelplines(false);
+
+          const context: InputContext = {
+            persona: parsed.persona || persona,
+            vulnerable_assets: parsed.vulnerableAssets && parsed.vulnerableAssets.length > 0 ? parsed.vulnerableAssets : vulnerableAssets,
+            start_location: parsed.startLocation || startLocation,
+            destination: parsed.destination || destination,
+            transport_mode: parsed.transportMode || transportMode,
+            budget_buffer_inr: budgetBuffer,
+            weather_feed: {
+              precipitation_intensity: precipitation,
+              waterlogging_risk_score: waterloggingScore,
+              transit_delays_reported: delaysReported
+            }
+          };
+
+          setGenerationLogs([
+            `[${new Date().toLocaleTimeString()}] Local voice parser successfully processed spoken command.`,
+            `[${new Date().toLocaleTimeString()}] Spoken transcript: "${transcript}"`,
+            `[${new Date().toLocaleTimeString()}] Extracted route: ${parsed.startLocation || "Current"} to ${parsed.destination || "Destination"}`
+          ]);
+
+          // Small sleep to simulate engine calculating
+          await new Promise(r => setTimeout(r, 600));
+
+          const roadmapData = calculateOfflineRoadmap(context);
+          setRoadmap(roadmapData);
+          setIsLiveOutput(true);
+          
+          setGenerationLogs(prev => [
+            ...prev,
+            `[${new Date().toLocaleTimeString()}] Weather roadmap calculated (Offline Heuristics). Status: ${roadmapData.status}.`,
+            `[${new Date().toLocaleTimeString()}] Starting immediate voice advisory broadcast...`
+          ]);
+
+          setVoiceInputProgress("Roadmap completed! Playing offline voice advisory...");
+
+          // Directly speak out the fresh roadmap!
+          setTimeout(() => {
+            if ('speechSynthesis' in window) {
+              window.speechSynthesis.cancel();
+              
+              const statusPhrase = roadmapData.status === "GO"
+                ? "Your safety advisory status is Green. It is safe to travel today."
+                : roadmapData.status === "CAUTION"
+                ? "Your safety advisory status is Amber. Exercise caution on your route."
+                : "Your safety advisory status is Red. Stay put! It is not safe to travel today.";
+
+              const finalAdvisory = `
+                JalVayu offline voice advisory updated.
+                For your commute from ${parsed.startLocation || startLocation} to ${parsed.destination || destination} by ${parsed.transportMode || transportMode}.
+                ${statusPhrase}
+                Your packing instructions: ${roadmapData.packing_directive}.
+                Your commute recommendation: ${roadmapData.commute_strategy}.
+                ${roadmapData.critical_alert ? `Critical Warning: ${roadmapData.critical_alert}.` : ""}
+                Safe journey.
+              `;
+
+              const utterance = new SpeechSynthesisUtterance(finalAdvisory);
+              const voices = window.speechSynthesis.getVoices();
+              const preferredVoice = voices.find(v => v.lang.startsWith("en") && (v.name.includes("Google") || v.name.includes("Natural") || v.name.includes("Zira"))) || voices.find(v => v.lang.startsWith("en")) || voices[0];
+              if (preferredVoice) utterance.voice = preferredVoice;
+              
+              utterance.onstart = () => setIsSpeaking(true);
+              utterance.onend = () => {
+                setIsSpeaking(false);
+                setVoiceInputProgress("");
+              };
+              utterance.onerror = () => {
+                setIsSpeaking(false);
+                setVoiceInputProgress("");
+              };
+              window.speechSynthesis.speak(utterance);
+            }
+          }, 500);
+
+        } catch (err: any) {
+          console.error(err);
+          setSpeechError(`Local voice parsing failed: ${err.message}`);
+          setVoiceInputProgress("");
+          setIsGenerating(false);
+        }
+        return;
+      }
+
       setVoiceInputProgress(`Heard: "${transcript}". Invoking JalVayu AI Voice parser...`);
 
       try {
@@ -456,6 +679,32 @@ export default function App() {
       setGenerationLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
     };
 
+    if (isOfflineMode) {
+      setIsGenerating(true);
+      try {
+        addLog("Initializing Offline Safety Core Heuristics Engine...");
+        await new Promise(r => setTimeout(r, 450));
+        addLog("Local profile parsed: " + persona);
+        addLog(`Tracking local assets: ${vulnerableAssets.join(", ")}`);
+        await new Promise(r => setTimeout(r, 400));
+        addLog(`Evaluating risk via local offline rules (waterlogging: ${waterloggingScore}/10)...`);
+        
+        const data = calculateOfflineRoadmap(context);
+        
+        await new Promise(r => setTimeout(r, 350));
+        addLog("Locally synthesized structured safety roadmap successfully compiled!");
+        setRoadmap(data);
+        setIsLiveOutput(true);
+      } catch (err: any) {
+        console.error(err);
+        addLog("LOCAL RISK ENGINE ERROR: " + err.message);
+        setApiError(err.message || "An unexpected error occurred during local roadmap evaluation.");
+      } finally {
+        setIsGenerating(false);
+      }
+      return;
+    }
+
     try {
       addLog("Initializing JalVayu GenAI Core Orchestrator...");
       await new Promise(r => setTimeout(r, 600));
@@ -609,9 +858,44 @@ export default function App() {
         </div>
 
         <div className="flex items-center space-x-4">
+          {/* Offline Mode Toggle exactly matching screenshot */}
+          <div className="flex items-center space-x-2.5 px-3 py-1.5 rounded-lg bg-[#111827] border border-[#1F2937]">
+            {isOfflineMode ? (
+              <WifiOff className="w-4 h-4 text-rose-400 animate-pulse" />
+            ) : (
+              <Wifi className="w-4 h-4 text-[#3B82F6]" />
+            )}
+            <span className="text-xs font-mono text-slate-300 font-medium">Offline Mode</span>
+            
+            {/* Elegant Custom iOS-style toggle switch */}
+            <button
+              onClick={() => setIsOfflineMode(!isOfflineMode)}
+              className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                isOfflineMode ? 'bg-[#1E293B] border-[#3B82F6]' : 'bg-[#1E293B]'
+              }`}
+              style={{ backgroundColor: isOfflineMode ? '#2563EB' : '#1E293B' }}
+              aria-label="Toggle offline mode"
+            >
+              <span
+                className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                  isOfflineMode ? 'translate-x-4' : 'translate-x-0'
+                }`}
+              />
+            </button>
+          </div>
+
           <div className="hidden md:flex items-center space-x-2.5 px-3.5 py-1.5 rounded-lg bg-[#111827] border border-[#1F2937] text-xs font-mono text-slate-400">
-            <Database className="w-3.5 h-3.5 text-blue-400" />
-            <span>GenAI Orchestration Active</span>
+            {isOfflineMode ? (
+              <>
+                <Terminal className="w-3.5 h-3.5 text-amber-400" />
+                <span>Offline Engine Active</span>
+              </>
+            ) : (
+              <>
+                <Database className="w-3.5 h-3.5 text-blue-400" />
+                <span>GenAI Orchestration Active</span>
+              </>
+            )}
           </div>
         </div>
       </header>
@@ -680,7 +964,10 @@ export default function App() {
             </div>
 
             <p className="text-xs text-slate-400 mb-4 leading-relaxed">
-              State your commute details using voice commands. Our AI model parses your route and immediately broadcasts your safety advisory report.
+              {isOfflineMode 
+                ? "State your commute details using voice commands. In offline mode, your route details and safety advisory are processed locally using offline heuristic rule engines."
+                : "State your commute details using voice commands. Our AI model parses your route and immediately broadcasts your safety advisory report."
+              }
             </p>
 
             <div className="grid grid-cols-2 gap-3">
