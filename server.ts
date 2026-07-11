@@ -89,6 +89,57 @@ Generate the structured safety roadmap. Ensure to follow the requested tone and 
   }
 });
 
+// JalVayu GenAI voice commute parsing endpoint
+app.post("/api/jalvayu/parse-voice-commute", async (req, res) => {
+  try {
+    const { transcript } = req.body;
+    if (!transcript) {
+      return res.status(400).json({ error: "Transcript is required." });
+    }
+
+    const systemInstruction = `You are a voice transcript parsing engine for JalVayu, the hyper-local monsoon preparedness assistant.
+Your task is to analyze a spoken transit request (transcript) and extract structured entities.
+Map the extracted details into the following schema:
+- transportMode must be mapped to one of these exact values: "Metro", "Cab", "Auto", "Two-wheeler", "Walking". If not specified or unrecognized, default to a sensible mapping or null.
+- vulnerableAssets is an array of strings representing items the user wants to protect from waterlogging/rain (e.g., laptop, textbooks, documents, medicine, passport).
+- startLocation is the starting place.
+- destination is where they want to go.
+- persona is who they are (e.g. Gig Worker, Student, Office Goer, Delivery Partner, Tech Professional).`;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-3.5-flash",
+      contents: `Extract commuting details from this voice transcript: "${transcript}"`,
+      config: {
+        systemInstruction: systemInstruction,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            startLocation: { type: Type.STRING, description: "Starting point or start location. Return empty string if not mentioned." },
+            destination: { type: Type.STRING, description: "Destination location. Return empty string if not mentioned." },
+            transportMode: { type: Type.STRING, description: "Must be exactly one of: 'Metro', 'Cab', 'Auto', 'Two-wheeler', 'Walking', or null if not mentioned." },
+            persona: { type: Type.STRING, description: "Persona of the user or null if not stated." },
+            vulnerableAssets: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: "List of critical assets mentioned that need protection."
+            }
+          }
+        }
+      }
+    });
+
+    const resultText = response.text;
+    if (!resultText) {
+      throw new Error("No response from voice parsing engine.");
+    }
+    res.json(JSON.parse(resultText));
+  } catch (error: any) {
+    console.error("Error in voice parsing engine:", error);
+    res.status(500).json({ error: error.message || "Internal Server Error" });
+  }
+});
+
 // Vite middleware integration for full-stack SPA experience
 async function setupVite() {
   if (process.env.NODE_ENV !== "production") {

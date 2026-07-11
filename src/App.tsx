@@ -28,7 +28,15 @@ import {
   Car,
   Bike,
   Navigation,
-  FolderLock
+  FolderLock,
+  Mic,
+  MicOff,
+  Volume2,
+  VolumeX,
+  Play,
+  Square,
+  Pause,
+  Sparkles
 } from "lucide-react";
 import { InputContext, SafetyRoadmap } from "./types";
 
@@ -145,6 +153,232 @@ export default function App() {
   const [isLiveOutput, setIsLiveOutput] = useState<boolean>(false);
   const [isConfirmed, setIsConfirmed] = useState<boolean>(false);
   const [showHelplines, setShowHelplines] = useState<boolean>(false);
+
+  // AI Voice states
+  const [isListening, setIsListening] = useState<boolean>(false);
+  const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
+  const [speechError, setSpeechError] = useState<string | null>(null);
+  const [voiceInputProgress, setVoiceInputProgress] = useState<string>("");
+
+  // Speak out the safety roadmap via Web Speech API Text-to-Speech
+  const speakRoadmap = () => {
+    if (!('speechSynthesis' in window)) {
+      setSpeechError("Speech Synthesis (TTS) is not supported in this browser.");
+      return;
+    }
+
+    if (window.speechSynthesis.speaking) {
+      window.speechSynthesis.cancel();
+      setIsSpeaking(false);
+      return;
+    }
+
+    const statusPhrase = roadmap.status === "GO"
+      ? "Safety status is Green. Go! It is safe to travel on your route."
+      : roadmap.status === "CAUTION"
+      ? "Safety status is Amber. Exercise caution, there is some pooling or rain."
+      : "Safety status is Red. Stay put! It is not safe to travel today.";
+
+    const textToSpeak = `
+      JalVayu safety update for your trip from ${startLocation || "Source"} to ${destination || "Destination"} by ${transportMode || "preferred transport"}.
+      ${statusPhrase}
+      Waterlogging risk is scored at ${waterloggingScore} out of 10.
+      Precipitation intensity is reported as: ${precipitation || "not specified"}.
+      Your packing advice is: ${roadmap.packing_directive}
+      Your travel commute strategy is: ${roadmap.commute_strategy}
+      ${roadmap.critical_alert ? `Critical alert warning: ${roadmap.critical_alert}` : ""}
+      Thank you, stay safe.
+    `;
+
+    const utterance = new SpeechSynthesisUtterance(textToSpeak);
+    const voices = window.speechSynthesis.getVoices();
+    const preferredVoice = voices.find(v => v.lang.startsWith("en") && (v.name.includes("Google") || v.name.includes("Natural") || v.name.includes("Zira"))) || voices.find(v => v.lang.startsWith("en")) || voices[0];
+    
+    if (preferredVoice) {
+      utterance.voice = preferredVoice;
+    }
+
+    utterance.onstart = () => setIsSpeaking(true);
+    utterance.onend = () => setIsSpeaking(false);
+    utterance.onerror = (e) => {
+      console.error("SpeechSynthesis error:", e);
+      setIsSpeaking(false);
+    };
+
+    window.speechSynthesis.speak(utterance);
+  };
+
+  const stopSpeaking = () => {
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+      setIsSpeaking(false);
+    }
+  };
+
+  // Listen to user via Speech Recognition (Speech-to-Text) and feed into Gemini parsing engine
+  const startListening = () => {
+    setSpeechError(null);
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      setSpeechError("Speech recognition is not supported in this browser. Please try Chrome or Edge.");
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = "en-IN"; // Good fallback for dual English/Indian pronunciations
+
+    recognition.onstart = () => {
+      setIsListening(true);
+      setVoiceInputProgress("Microphone active. Speak your route now (e.g., 'Take me from Chembur to Bandra by Cab, carrying my laptop').");
+    };
+
+    recognition.onerror = (e: any) => {
+      console.error("Speech Recognition Error:", e);
+      setSpeechError(`Microphone error: ${e.error || "Permission denied"}.`);
+      setIsListening(false);
+      setVoiceInputProgress("");
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+    };
+
+    recognition.onresult = async (event: any) => {
+      const transcript = event.results[0][0].transcript;
+      if (!transcript) return;
+
+      setIsListening(false);
+      setVoiceInputProgress(`Heard: "${transcript}". Invoking JalVayu AI Voice parser...`);
+
+      try {
+        const response = await fetch("/api/jalvayu/parse-voice-commute", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ transcript })
+        });
+
+        if (!response.ok) {
+          throw new Error("Failed to contact the voice parsing backend.");
+        }
+
+        const parsed = await response.json();
+        
+        // Populate inputs
+        if (parsed.startLocation) setStartLocation(parsed.startLocation);
+        if (parsed.destination) setDestination(parsed.destination);
+        if (parsed.persona) setPersona(parsed.persona);
+        if (parsed.vulnerableAssets && parsed.vulnerableAssets.length > 0) {
+          setVulnerableAssets(parsed.vulnerableAssets);
+        }
+        if (parsed.transportMode) {
+          const matched = ["Metro", "Cab", "Auto", "Two-wheeler", "Walking"].find(
+            m => m.toLowerCase() === parsed.transportMode.toLowerCase()
+          );
+          if (matched) setTransportMode(matched);
+        }
+
+        setSelectedScenarioId("custom");
+        setVoiceInputProgress("Updating form and invoking monsoon risk engine...");
+
+        // Automatically trigger roadmap generation!
+        setIsGenerating(true);
+        setApiError(null);
+        setGenerationLogs([]);
+        setIsConfirmed(false);
+        setShowHelplines(false);
+
+        const context: InputContext = {
+          persona: parsed.persona || persona,
+          vulnerable_assets: parsed.vulnerableAssets && parsed.vulnerableAssets.length > 0 ? parsed.vulnerableAssets : vulnerableAssets,
+          start_location: parsed.startLocation || startLocation,
+          destination: parsed.destination || destination,
+          transport_mode: parsed.transportMode || transportMode,
+          budget_buffer_inr: budgetBuffer,
+          weather_feed: {
+            precipitation_intensity: precipitation,
+            waterlogging_risk_score: waterloggingScore,
+            transit_delays_reported: delaysReported
+          }
+        };
+
+        setGenerationLogs([
+          `[${new Date().toLocaleTimeString()}] AI Voice parser successfully processed spoken command.`,
+          `[${new Date().toLocaleTimeString()}] Spoken transcript: "${transcript}"`,
+          `[${new Date().toLocaleTimeString()}] Extracted route: ${parsed.startLocation || "Current"} to ${parsed.destination || "Destination"}`
+        ]);
+
+        const roadmapRes = await fetch("/api/jalvayu/roadmap", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(context)
+        });
+
+        if (!roadmapRes.ok) {
+          throw new Error("Failed to invoke GenAI risk engine for weather roadmap.");
+        }
+
+        const roadmapData: SafetyRoadmap = await roadmapRes.json();
+        setRoadmap(roadmapData);
+        setIsLiveOutput(true);
+        
+        setGenerationLogs(prev => [
+          ...prev,
+          `[${new Date().toLocaleTimeString()}] Weather roadmap calculated. Status: ${roadmapData.status}.`,
+          `[${new Date().toLocaleTimeString()}] Starting immediate voice advisory broadcast...`
+        ]);
+
+        setVoiceInputProgress("Roadmap completed! Playing voice advisory...");
+
+        // Directly speak out the fresh roadmap!
+        setTimeout(() => {
+          if ('speechSynthesis' in window) {
+            window.speechSynthesis.cancel();
+            
+            const statusPhrase = roadmapData.status === "GO"
+              ? "Your safety advisory status is Green. It is safe to travel today."
+              : roadmapData.status === "CAUTION"
+              ? "Your safety advisory status is Amber. Exercise caution on your route."
+              : "Your safety advisory status is Red. Stay put! It is not safe to travel today.";
+
+            const finalAdvisory = `
+              JalVayu voice advisory updated.
+              For your commute from ${parsed.startLocation || startLocation} to ${parsed.destination || destination} by ${parsed.transportMode || transportMode}.
+              ${statusPhrase}
+              Your packing instructions: ${roadmapData.packing_directive}.
+              Your commute recommendation: ${roadmapData.commute_strategy}.
+              ${roadmapData.critical_alert ? `Critical Warning: ${roadmapData.critical_alert}.` : ""}
+              Safe journey.
+            `;
+
+            const utterance = new SpeechSynthesisUtterance(finalAdvisory);
+            const voices = window.speechSynthesis.getVoices();
+            const preferredVoice = voices.find(v => v.lang.startsWith("en") && (v.name.includes("Google") || v.name.includes("Natural") || v.name.includes("Zira"))) || voices.find(v => v.lang.startsWith("en")) || voices[0];
+            if (preferredVoice) utterance.voice = preferredVoice;
+            
+            utterance.onstart = () => setIsSpeaking(true);
+            utterance.onend = () => {
+              setIsSpeaking(false);
+              setVoiceInputProgress("");
+            };
+            utterance.onerror = () => {
+              setIsSpeaking(false);
+              setVoiceInputProgress("");
+            };
+            window.speechSynthesis.speak(utterance);
+          }
+        }, 500);
+
+      } catch (err: any) {
+        console.error(err);
+        setSpeechError(`Voice analysis failed: ${err.message}`);
+        setVoiceInputProgress("");
+        setIsGenerating(false);
+      }
+    };
+  };
 
   // Rain control based on waterlogging risk & rain intensity
   const [rainDroplets, setRainDroplets] = useState<number[]>([]);
@@ -430,6 +664,123 @@ export default function App() {
                 );
               })}
             </div>
+          </div>
+
+          {/* AI Voice Copilot Panel */}
+          <div className="bg-[#0D0D0E] border border-[#1F2937] rounded-2xl p-5 backdrop-blur-sm relative overflow-hidden">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center space-x-2">
+                <Sparkles className="w-4.5 h-4.5 text-blue-400 animate-pulse" />
+                <h2 className="font-semibold font-display text-white text-base">AI Voice Copilot</h2>
+              </div>
+              <span className="text-[9px] font-mono text-blue-400 bg-blue-500/10 border border-blue-500/20 px-1.5 py-0.5 rounded flex items-center gap-1">
+                <span className={`w-1.5 h-1.5 rounded-full ${isListening ? "bg-red-500 animate-ping" : isSpeaking ? "bg-green-500 animate-pulse" : "bg-blue-500"}`} />
+                {isListening ? "RECORDING" : isSpeaking ? "SPEAKING" : "VOICE READY"}
+              </span>
+            </div>
+
+            <p className="text-xs text-slate-400 mb-4 leading-relaxed">
+              State your commute details using voice commands. Our AI model parses your route and immediately broadcasts your safety advisory report.
+            </p>
+
+            <div className="grid grid-cols-2 gap-3">
+              {/* Tap to Speak Button */}
+              <button
+                onClick={startListening}
+                className={`py-2.5 px-3 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer border ${
+                  isListening
+                    ? "bg-red-500/10 border-red-500/30 text-red-400 hover:bg-red-500/20 shadow-lg shadow-red-500/5"
+                    : "bg-blue-600/10 border-blue-500/20 text-blue-400 hover:bg-blue-600/25"
+                }`}
+              >
+                {isListening ? (
+                  <>
+                    <MicOff className="w-4 h-4 text-red-400 animate-pulse" />
+                    <span>Listening...</span>
+                  </>
+                ) : (
+                  <>
+                    <Mic className="w-4 h-4 text-blue-400" />
+                    <span>Speak Route</span>
+                  </>
+                )}
+              </button>
+
+              {/* Speak Roadmap (TTS) Button */}
+              <button
+                onClick={isSpeaking ? stopSpeaking : speakRoadmap}
+                className={`py-2.5 px-3 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer border ${
+                  isSpeaking
+                    ? "bg-rose-500/10 border-rose-500/30 text-rose-400 hover:bg-rose-500/20"
+                    : "bg-emerald-600/10 border-emerald-500/20 text-emerald-400 hover:bg-emerald-600/25"
+                }`}
+              >
+                {isSpeaking ? (
+                  <>
+                    <VolumeX className="w-4 h-4 text-rose-400 animate-pulse" />
+                    <span>Stop Voice</span>
+                  </>
+                ) : (
+                  <>
+                    <Volume2 className="w-4 h-4 text-emerald-400" />
+                    <span>Play Voice</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+            {/* Waveform Animation Area */}
+            {(isListening || isSpeaking) && (
+              <div className="mt-4 p-3 bg-[#0A0A0B] border border-[#1F2937] rounded-xl flex items-center justify-between">
+                <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider">
+                  {isListening ? "Input Audio Feed:" : "Synthesizer Audio Feed:"}
+                </span>
+                <div className="flex items-center gap-1 h-5 px-1">
+                  {[1, 2, 3, 4, 5, 6, 7].map((bar) => (
+                    <motion.div
+                      key={bar}
+                      className={`w-1 rounded-full ${isListening ? "bg-red-400" : "bg-emerald-400"}`}
+                      animate={{
+                        height: isListening ? [4, 16, 4] : isSpeaking ? [4, 12, 4] : 4
+                      }}
+                      transition={{
+                        duration: 0.5,
+                        repeat: Infinity,
+                        delay: bar * 0.08,
+                        ease: "easeInOut"
+                      }}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Voice Parsing Terminal Progress Indicator */}
+            {voiceInputProgress && (
+              <div className="mt-4 p-3 bg-[#0A0A0B]/80 border border-blue-500/20 rounded-xl space-y-1.5 animate-pulse">
+                <div className="flex items-center space-x-1.5 text-[10px] font-mono text-blue-400">
+                  <Sparkles className="w-3 h-3 text-blue-400 animate-spin" />
+                  <span className="font-bold uppercase tracking-wider">Voice Processor Status</span>
+                </div>
+                <p className="text-[11px] font-mono text-slate-300 leading-relaxed pl-3 border-l border-blue-500/30">
+                  {voiceInputProgress}
+                </p>
+              </div>
+            )}
+
+            {/* Error notifications */}
+            {speechError && (
+              <div className="mt-4 p-3 bg-amber-500/5 border border-amber-500/20 rounded-xl text-[11px] text-amber-300 flex items-start space-x-2">
+                <AlertCircle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <span className="font-bold">Voice Copilot Notice</span>
+                  <p className="mt-0.5 leading-relaxed">{speechError}</p>
+                </div>
+                <button onClick={() => setSpeechError(null)} className="text-slate-500 hover:text-white cursor-pointer ml-1 shrink-0">
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Interactive Configuration Form */}
@@ -790,8 +1141,8 @@ export default function App() {
                     className="space-y-6"
                   >
                     {/* Status Display Area - Redesigned like Elegant Dark Status Block */}
-                    <div className={`p-5 rounded-2xl ${statusConfig.headerBg} relative overflow-hidden transition-all duration-300`}>
-                      <div className="flex items-center justify-between">
+                    <div className={`p-5 rounded-2xl ${statusConfig.headerBg} relative overflow-hidden transition-all duration-300 space-y-4`}>
+                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
                         <div className="flex items-center space-x-4">
                           <div className="relative">
                             <div className={`absolute inset-0 rounded-full blur ${statusConfig.glow}`} />
@@ -806,9 +1157,59 @@ export default function App() {
                           </div>
                         </div>
 
-                        <div className="text-right">
+                        <div className="text-left sm:text-right">
                           <span className="block text-[10px] font-mono text-[#6B7280] uppercase tracking-wider font-semibold">Rain Level</span>
                           <span className="text-sm font-semibold text-slate-300">{precipitation || "No precipitation reported"}</span>
+                        </div>
+                      </div>
+
+                      {/* Integrated Audio Player Broadcast Bar */}
+                      <div className="pt-3 border-t border-[#1F2937]/50 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 text-xs bg-[#0A0A0B]/40 p-3 rounded-xl">
+                        <div className="flex items-center space-x-2.5">
+                          <div className={`p-1.5 rounded-lg ${isSpeaking ? "bg-emerald-500/10 text-emerald-400 animate-pulse" : "bg-[#111827] text-slate-400"}`}>
+                            <Volume2 className="w-4 h-4" />
+                          </div>
+                          <div>
+                            <span className="block text-[11px] font-medium text-slate-200">AI Safety Radio Update</span>
+                            <span className="text-[10px] text-slate-400 font-mono">
+                              {isSpeaking ? "Broadcasting live weather voice advisory..." : "Synthesized text-to-speech feedback ready"}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          {isSpeaking && (
+                            <div className="flex items-center gap-0.5 h-3 px-1.5 mr-1">
+                              {[1, 2, 3, 4].map((bar) => (
+                                <motion.div
+                                  key={bar}
+                                  className="w-0.5 bg-emerald-400 rounded-full"
+                                  animate={{ height: [4, 10, 4] }}
+                                  transition={{ duration: 0.5, repeat: Infinity, delay: bar * 0.1 }}
+                                />
+                              ))}
+                            </div>
+                          )}
+                          <button
+                            onClick={isSpeaking ? stopSpeaking : speakRoadmap}
+                            className={`py-1.5 px-3 rounded-lg text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition-all border ${
+                              isSpeaking
+                                ? "bg-rose-500/10 border-rose-500/20 text-rose-400 hover:bg-rose-500/20"
+                                : "bg-emerald-500/10 border-emerald-500/20 text-emerald-400 hover:bg-emerald-500/20"
+                            }`}
+                          >
+                            {isSpeaking ? (
+                              <>
+                                <Square className="w-3 h-3 text-rose-400 fill-rose-400" />
+                                <span>Stop Update</span>
+                              </>
+                            ) : (
+                              <>
+                                <Play className="w-3 h-3 text-emerald-400 fill-emerald-400" />
+                                <span>Listen to Advisory</span>
+                              </>
+                            )}
+                          </button>
                         </div>
                       </div>
                     </div>
